@@ -242,10 +242,9 @@ elif DATASET == "gesture":
 SpikeFunction.scale = 0.3 / args.thr
 
 """Model and optimizer creation"""
-model = Network(n_in=args.n_in, 
-                n_rec=args.n_rec,
-                n_out=args.n_out,
-                args=args).to(device)
+model = Network(n_in=args.n_in, n_rec=args.n_rec, n_out=args.n_out, args=args).to(
+    device
+)
 
 optimizer = optim.Adamax(
     model.parameters(), lr=args.lr, betas=(0.9, 0.999), weight_decay=args.weight_L2
