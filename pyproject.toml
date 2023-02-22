@@ -2,7 +2,7 @@
 name = "etlp"
 version = "0.1.0"
 description = "Event-based Three-factor Local Plasticity"
-authors = ["Fernando M. Quintana <fernando@uca.es>"]
+authors = ["Fernando M. Quintana <fernando.quintana@uca.es>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]

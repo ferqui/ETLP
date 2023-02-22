@@ -276,7 +276,7 @@ class Network(nn.Module):
 
         self.state = new_state
 
-        return S_out
+        return S_out_new
 
     def detach(self):
         for state in self.state:
