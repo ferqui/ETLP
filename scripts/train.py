@@ -4,6 +4,7 @@ import tonic
 import tonic.transforms as transforms
 import torch
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from ETLP.models import NetworkBuilder
@@ -47,8 +48,10 @@ sigmoid = torch.nn.Sigmoid()
 logSoftmax = torch.nn.LogSoftmax(dim=1)
 optimizer = torch.optim.Adam(network.parameters(), lr=1e-4)
 
-for epoch in range(10):
+writer = SummaryWriter(log_dir=f"runs/{method}")
+for epoch in range(100):
     network.train()
+    train_loss = np.array([])
     train_label = np.array([])
     train_prediction = np.array([])
     pbar = tqdm(dl_train)
@@ -65,8 +68,8 @@ for epoch in range(10):
                 frame[:, t], torch.nn.functional.one_hot(target, num_classes=20), t
             )
             output_acum.append(output[-1])
-            # loss_ = loss_fn(torch.log(sigmoid(output[-1])), target)
-            loss_ = loss_fn(logSoftmax(output[-1]), target)
+            loss_ = loss_fn(torch.log(sigmoid(output[-1])), target)
+            # loss_ = loss_fn(logSoftmax(output[-1]), target)
             ETLPgrad = torch.autograd.grad(loss_, output[0], retain_graph=True)[0]
             loss += loss_
             if method == "ETLP":
@@ -83,12 +86,19 @@ for epoch in range(10):
             train_label = np.append(train_label, target.cpu().numpy())
             train_prediction = np.append(train_prediction, prediction)
 
+            train_loss = np.append(train_loss, loss.cpu().item())
             accuracy = np.mean((train_prediction == train_label))
 
         pbar.set_postfix({"Loss": loss.cpu().item(), "Accuracy": f"{accuracy:%}"})
 
+    writer.add_scalar("train/Loss", np.mean(train_loss), global_step=epoch)
+    writer.add_scalar(
+        "train/Accuracy", np.mean((train_prediction == train_label)), global_step=epoch
+    )
+
     network.eval()
     with torch.no_grad():
+        test_loss = np.array([])
         test_label = np.array([])
         test_prediction = np.array([])
         pbar = tqdm(dl_test)
@@ -104,8 +114,8 @@ for epoch in range(10):
                     frame[:, t], torch.nn.functional.one_hot(target, num_classes=20)
                 )
                 output_acum.append(output[-1])
-                # loss_ = loss_fn(torch.log(sigmoid(output[-1])), target)
-                loss_ = loss_fn(logSoftmax(output[-1]), target)
+                loss_ = loss_fn(torch.log(sigmoid(output[-1])), target)
+                # loss_ = loss_fn(logSoftmax(output[-1]), target)
                 loss += loss_
             output_acum = torch.stack(output_acum, dim=1)
 
@@ -113,7 +123,18 @@ for epoch in range(10):
             test_label = np.append(test_label, target.cpu().numpy())
             test_prediction = np.append(test_prediction, prediction)
 
+            test_loss = np.append(test_loss, loss.cpu().item())
             accuracy = np.mean((test_prediction == test_label))
 
             pbar.set_postfix({"Loss": loss.item(), "Accuracy": f"{accuracy:%}"})
         tqdm.write(f"Accuracy: {accuracy:%}")
+
+        test_loss = np.mean(test_loss)
+        test_accuracy = np.mean((test_prediction == test_label))
+
+        writer.add_scalar("test/Loss", test_loss, global_step=epoch)
+        writer.add_scalar("test/Accuracy", test_accuracy, global_step=epoch)
+
+# h_params = {'N': 256, 'alpha': 0.4, 'alpha_out': 0.9}
+# metrics = {'test/Accuracy': test_accuracy, 'test/Loss': test_loss}
+# writer.add_hparams(h_params, metrics)
