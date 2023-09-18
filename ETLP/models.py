@@ -201,7 +201,6 @@ class NetworkBuilder(torch.nn.Module):
         input_shape,
         output_shape,
         Nhid=[1],
-        alphas=[0.9, 0.9],
         outputclass=LeakyLayer,
         method="BP",
     ):
@@ -214,7 +213,7 @@ class NetworkBuilder(torch.nn.Module):
         self.hooks = torch.nn.ModuleList()
         self.layers = torch.nn.ModuleList()
         for i in range(1, len(Nhid)):
-            self.layers.append(LIFLayer(Nhid[i - 1], Nhid[i]))
+            self.layers.append(LIFLayer(Nhid[i - 1], Nhid[i], alpha=0.6))
             self.hooks.append(TrainingHook([output_shape, Nhid[i]], train_mode=method))
 
         self.output_layer = outputclass(Nhid[-1], output_shape)

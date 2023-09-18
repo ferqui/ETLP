@@ -1,16 +1,21 @@
 import argparse
+from datetime import datetime
 
 import matplotlib.pyplot as plt
 import numpy as np
+import seaborn as sns
 import tonic
 import tonic.transforms as transforms
 import torch
+from sklearn.metrics import confusion_matrix
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from ETLP.models import NetworkBuilder
 from ETLP.utils import prediction_mostcommon
+
+sns.set()
 
 parser = argparse.ArgumentParser(description="ETLP on SHD dataset.")
 parser.add_argument("--batch_size", type=int, default=128, help="Batch size")
@@ -67,9 +72,10 @@ network = NetworkBuilder(np.prod(sensor_size), 20, args.num_layers, method=metho
 loss_fn = torch.nn.NLLLoss()
 sigmoid = torch.nn.Sigmoid()
 logSoftmax = torch.nn.LogSoftmax(dim=1)
-optimizer = torch.optim.Adam(network.parameters(), lr=1e-4)
+optimizer = torch.optim.SGD(network.parameters(), lr=1e-4)
 
-writer = SummaryWriter(log_dir=f"runs/{method}")
+current_time = datetime.now().strftime("%b%d_%H-%M-%S")
+writer = SummaryWriter(log_dir=f"runs/{method}/{current_time}")
 for epoch in range(100):
     network.train()
     train_loss = np.array([])
@@ -89,9 +95,8 @@ for epoch in range(100):
                 frame[:, t], torch.nn.functional.one_hot(target, num_classes=20), t
             )
             output_acum.append(output[-1])
-            loss_ = loss_fn(torch.log(sigmoid(output[-1])), target)
-            # loss_ = loss_fn(logSoftmax(output[-1]), target)
-            ETLPgrad = torch.autograd.grad(loss_, output[0], retain_graph=True)[0]
+            # loss_ = loss_fn(torch.log(sigmoid(output[-1])), target)
+            loss_ = loss_fn(logSoftmax(output[-1]), target)
             loss += loss_
             if method == "ETLP":
                 network.grad(loss_)
@@ -127,6 +132,8 @@ for epoch in range(100):
             target = target.to(device)
             frame = torch.flatten(frame.to(device), start_dim=2)
 
+            spike_record = [[] for _ in range(len(args.num_layers))]
+            voltage_record = [[] for _ in range(len(args.num_layers))]
             output_acum = []
             loss = torch.tensor(0.0, device=device)
             network.init_state(frame)
@@ -134,11 +141,17 @@ for epoch in range(100):
                 output = network(
                     frame[:, t], torch.nn.functional.one_hot(target, num_classes=20)
                 )
+                for i in range(len(args.num_layers)):
+                    spike_record[i].append(network.layers[i].state.S)
+                    voltage_record[i].append(network.layers[i].state.V)
                 output_acum.append(output[-1])
-                loss_ = loss_fn(torch.log(sigmoid(output[-1])), target)
-                # loss_ = loss_fn(logSoftmax(output[-1]), target)
+                # loss_ = loss_fn(torch.log(sigmoid(output[-1])), target)
+                loss_ = loss_fn(logSoftmax(output[-1]), target)
                 loss += loss_
             output_acum = torch.stack(output_acum, dim=1)
+            for i in range(len(args.num_layers)):
+                spike_record[i] = torch.stack(spike_record[i], dim=1)
+                voltage_record[i] = torch.stack(voltage_record[i], dim=1)
 
             prediction = prediction_mostcommon(output_acum.cpu().numpy())
             test_label = np.append(test_label, target.cpu().numpy())
@@ -155,6 +168,26 @@ for epoch in range(100):
 
         writer.add_scalar("test/Loss", test_loss, global_step=epoch)
         writer.add_scalar("test/Accuracy", test_accuracy, global_step=epoch)
+
+        for i in range(len(args.num_layers)):
+            fig_spike, ax = plt.subplots()
+            t, idx = np.where(spike_record[i][0].cpu().numpy())
+            ax.plot(t, idx, "|")
+            writer.add_figure(f"test/spikes layer{i}", fig_spike, global_step=epoch)
+
+            fig_voltage, ax = plt.subplots()
+            ax.plot(voltage_record[i][0].cpu().numpy())
+            writer.add_figure(f"test/voltages layer{i}", fig_voltage, global_step=epoch)
+
+        fig_output, ax = plt.subplots()
+        ax.plot(output_acum[0].cpu().numpy())
+        writer.add_figure("test/output", fig_output, global_step=epoch)
+
+        cm = confusion_matrix(test_label, test_prediction)
+
+        fig_cm, ax = plt.subplots()
+        sns.heatmap(cm, annot=False, ax=ax)
+        writer.add_figure("test/confusion", fig_cm, global_step=epoch)
 
 # h_params = {'N': 256, 'alpha': 0.4, 'alpha_out': 0.9}
 # metrics = {'test/Accuracy': test_accuracy, 'test/Loss': test_loss}
