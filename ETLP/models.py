@@ -106,7 +106,7 @@ class LIFLayer(torch.nn.Module):
             V=torch.zeros(input_.shape[0], self.out_features, device=input_.device),
             S=torch.zeros(input_.shape[0], self.out_features, device=input_.device),
             pre_trace=torch.zeros(
-                input_.shape[0], input_.shape[-1], device=input_.device
+                input_.shape[0], self.in_features, device=input_.device
             ),
             post_trace=torch.zeros(
                 input_.shape[0], self.out_features, device=input_.device

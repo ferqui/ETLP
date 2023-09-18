@@ -1,3 +1,5 @@
+import argparse
+
 import matplotlib.pyplot as plt
 import numpy as np
 import tonic
@@ -9,6 +11,25 @@ from tqdm import tqdm
 
 from ETLP.models import NetworkBuilder
 from ETLP.utils import prediction_mostcommon
+
+parser = argparse.ArgumentParser(description="ETLP on SHD dataset.")
+parser.add_argument("--batch_size", type=int, default=128, help="Batch size")
+parser.add_argument(
+    "--method",
+    choices=["BP", "DFA", "DRTP", "ETLP", "sDFA", "shallow"],
+    default="BP",
+    help="Training method",
+)
+parser.add_argument(
+    "-N",
+    "--num_layers",
+    nargs="+",
+    type=int,
+    help="Number of LIF layers",
+    default=[512, 256],
+)
+
+args = parser.parse_args()
 
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
@@ -27,22 +48,22 @@ dataset_test = tonic.datasets.SHD(
 dl_train = DataLoader(
     dataset_train,
     shuffle=True,
-    batch_size=128,
+    batch_size=args.batch_size,
     collate_fn=tonic.collation.PadTensors(batch_first=True),
 )
 
 dl_test = DataLoader(
     dataset_test,
     shuffle=False,
-    batch_size=128,
+    batch_size=args.batch_size,
     collate_fn=tonic.collation.PadTensors(batch_first=True),
 )
 
 ## Network builder
-method = "BP"
-network = NetworkBuilder(
-    np.prod(sensor_size), 20, [256], alphas=[0.4, 0.9], method=method
-).to(device)
+method = args.method
+network = NetworkBuilder(np.prod(sensor_size), 20, args.num_layers, method=method).to(
+    device
+)
 loss_fn = torch.nn.NLLLoss()
 sigmoid = torch.nn.Sigmoid()
 logSoftmax = torch.nn.LogSoftmax(dim=1)
