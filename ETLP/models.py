@@ -88,9 +88,20 @@ class LIFLayer(torch.nn.Module):
         super(LIFLayer, self).__init__()
         self.in_features = in_features
         self.out_features = out_features
-        self.Win = torch.nn.Parameter(torch.empty(out_features, in_features))
-        self.bias = torch.nn.Parameter(torch.empty(out_features), requires_grad=False)
-        self.alpha = torch.tensor(alpha, requires_grad=False)
+        self.Win = torch.nn.Parameter(
+            torch.empty(out_features, in_features), requires_grad=True
+        )
+        self.Wrec = torch.nn.Parameter(
+            torch.empty(out_features, out_features), requires_grad=True
+        )
+        self.bias = torch.nn.Parameter(torch.empty(out_features), requires_grad=True)
+
+        distribution = torch.distributions.gamma.Gamma(3, -3 * np.log(alpha))
+        tau_v = distribution.rsample((out_features,)).clamp(3, 100)
+        self.alpha = torch.nn.Parameter(
+            torch.exp(-1 / tau_v).float(), requires_grad=True
+        )
+
         self.state = None
         self.activation = activation
         self.gradient = None
@@ -99,14 +110,18 @@ class LIFLayer(torch.nn.Module):
 
     def reset_parameters(self):
         torch.nn.init.kaiming_uniform_(self.Win, a=math.sqrt(5))
-        torch.nn.init.constant_(self.bias, 1.0)
+        torch.nn.init.kaiming_uniform_(self.Wrec, a=math.sqrt(5))
+        torch.nn.init.uniform_(self.bias, 0.0, 1.0)
 
     def init_state(self, input_):
         self.state = self.NeuronState(
             V=torch.zeros(input_.shape[0], self.out_features, device=input_.device),
             S=torch.zeros(input_.shape[0], self.out_features, device=input_.device),
             pre_trace=torch.zeros(
-                input_.shape[0], self.in_features, device=input_.device
+                input_.shape[0],
+                self.in_features,
+                self.out_features,
+                device=input_.device,
             ),
             post_trace=torch.zeros(
                 input_.shape[0], self.out_features, device=input_.device
@@ -137,11 +152,15 @@ class LIFLayer(torch.nn.Module):
         state = self.state
 
         with torch.no_grad():
-            pre_trace = state.pre_trace * self.alpha + input_
+            pre_trace = state.pre_trace * self.alpha[None, None, :] + input_[:, :, None]
             # pre_trace = state.pre_trace * self.alpha * ((1 - S) - S * post_trace) + input_
 
         V = state.V * self.alpha * (1 - state.S)
-        V = V + torch.nn.functional.linear(input_, self.Win)
+        V = (
+            V
+            + torch.nn.functional.linear(input_, self.Win)
+            + torch.nn.functional.linear(state.S, self.Wrec)
+        )
         S = self.activation(V - self.bias)
 
         with torch.no_grad():
@@ -203,6 +222,7 @@ class NetworkBuilder(torch.nn.Module):
         Nhid=[1],
         outputclass=LeakyLayer,
         method="BP",
+        alpha=0.8,
     ):
         super(NetworkBuilder, self).__init__()
 
@@ -213,7 +233,7 @@ class NetworkBuilder(torch.nn.Module):
         self.hooks = torch.nn.ModuleList()
         self.layers = torch.nn.ModuleList()
         for i in range(1, len(Nhid)):
-            self.layers.append(LIFLayer(Nhid[i - 1], Nhid[i], alpha=0.6))
+            self.layers.append(LIFLayer(Nhid[i - 1], Nhid[i], alpha=alpha))
             self.hooks.append(TrainingHook([output_shape, Nhid[i]], train_mode=method))
 
         self.output_layer = outputclass(Nhid[-1], output_shape)
@@ -248,14 +268,11 @@ class NetworkBuilder(torch.nn.Module):
         else:
             y = None
 
-        out = [[] for _ in range(len(self.layers) + 1)]
         for layer_id, (layer, hook) in enumerate(zip(self.layers, self.hooks)):
             layerOutput_ = layer(input_)
             input_ = hook(layerOutput_, target, y)
-            out[layer_id] = layerOutput_
         output = self.output_layer(input_)
-        out[-1] = output
 
         if input_.requires_grad and (y is not None):
             y.data.copy_(output.data)  # in-place update, only happens with (s)DFA
-        return out
+        return output
