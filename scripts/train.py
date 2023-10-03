@@ -8,6 +8,7 @@ import tonic
 import tonic.transforms as transforms
 import torch
 from sklearn.metrics import confusion_matrix
+from tonic.cached_dataset import DiskCachedDataset
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
@@ -31,7 +32,7 @@ parser.add_argument(
     nargs="+",
     type=int,
     help="Number of LIF layers",
-    default=[512, 256],
+    default=[256],
 )
 
 args = parser.parse_args()
@@ -45,10 +46,12 @@ frame_transform = transforms.ToFrame(sensor_size=sensor_size, time_window=10000)
 dataset_train = tonic.datasets.SHD(
     save_to="./.data", train=True, transform=frame_transform
 )
+dataset_train = DiskCachedDataset(dataset_train, ".cache/SHD/train")
 
 dataset_test = tonic.datasets.SHD(
     save_to="./.data", train=False, transform=frame_transform
 )
+dataset_test = DiskCachedDataset(dataset_test, ".cache/SHD/test")
 
 dl_train = DataLoader(
     dataset_train,
@@ -72,7 +75,7 @@ network = NetworkBuilder(np.prod(sensor_size), 20, args.num_layers, method=metho
 loss_fn = torch.nn.NLLLoss()
 sigmoid = torch.nn.Sigmoid()
 logSoftmax = torch.nn.LogSoftmax(dim=1)
-optimizer = torch.optim.SGD(network.parameters(), lr=1e-4)
+optimizer = torch.optim.Adamax(network.parameters(), lr=1e-4, betas=(0.9, 0.999))
 
 current_time = datetime.now().strftime("%b%d_%H-%M-%S")
 writer = SummaryWriter(log_dir=f"runs/{method}/{current_time}")
@@ -87,6 +90,7 @@ for epoch in range(100):
         frame = torch.flatten(frame.to(device), start_dim=2)
 
         output_acum = []
+        spike_record = [[] for _ in range(len(args.num_layers))]
         optimizer.zero_grad()
         loss = torch.tensor(0.0, device=device)
         network.init_state(frame)
@@ -94,17 +98,30 @@ for epoch in range(100):
             output = network(
                 frame[:, t], torch.nn.functional.one_hot(target, num_classes=20), t
             )
-            output_acum.append(output[-1])
+            for i in range(len(args.num_layers)):
+                spike_record[i].append(network.layers[i].state.S)
+            output_acum.append(output)
             # loss_ = loss_fn(torch.log(sigmoid(output[-1])), target)
-            loss_ = loss_fn(logSoftmax(output[-1]), target)
-            loss += loss_
-            if method == "ETLP":
-                network.grad(loss_)
+            # loss_ = loss_fn(logSoftmax(output), target)
+            # loss += loss_
+            # if method == "ETLP":
+            #     network.grad(loss_)
+
         output_acum = torch.stack(output_acum, dim=1)
+        reg_loss = 0.0
+        for i in range(len(args.num_layers)):
+            spike_record[i] = torch.stack(spike_record[i], dim=1)
+            reg_loss += 2e-6 * torch.sum(spike_record[i])
+            reg_loss += 2e-6 * torch.mean(
+                torch.sum(torch.sum(spike_record[i], dim=0), dim=0) ** 2
+            )
+
+        m, _ = torch.max(output_acum, 1)
+        loss = loss_fn(logSoftmax(m), target) + reg_loss
 
         loss.backward()
-        if method == "ETLP":
-            network.applyGrad()
+        # if method == "ETLP":
+        #     network.applyGrad()
         optimizer.step()
 
         with torch.no_grad():
@@ -144,18 +161,30 @@ for epoch in range(100):
                 for i in range(len(args.num_layers)):
                     spike_record[i].append(network.layers[i].state.S)
                     voltage_record[i].append(network.layers[i].state.V)
-                output_acum.append(output[-1])
+                output_acum.append(output)
                 # loss_ = loss_fn(torch.log(sigmoid(output[-1])), target)
-                loss_ = loss_fn(logSoftmax(output[-1]), target)
-                loss += loss_
+                # loss_ = loss_fn(logSoftmax(output), target)
+                # loss += loss_
             output_acum = torch.stack(output_acum, dim=1)
+            reg_loss = 0.0
             for i in range(len(args.num_layers)):
                 spike_record[i] = torch.stack(spike_record[i], dim=1)
                 voltage_record[i] = torch.stack(voltage_record[i], dim=1)
 
-            prediction = prediction_mostcommon(output_acum.cpu().numpy())
+                reg_loss += 2e-6 * torch.sum(
+                    spike_record[i]
+                )  # L1 loss on total number of spikes
+                reg_loss += 2e-6 * torch.mean(
+                    torch.sum(torch.sum(spike_record[i], dim=0), dim=0) ** 2
+                )
+
+            m, _ = torch.max(output_acum, 1)
+            loss = loss_fn(logSoftmax(m), target) + reg_loss
+
+            _, prediction = torch.max(m, 1)  # argmax over output units
+            # prediction = prediction_mostcommon(output_acum.cpu().numpy())
             test_label = np.append(test_label, target.cpu().numpy())
-            test_prediction = np.append(test_prediction, prediction)
+            test_prediction = np.append(test_prediction, prediction.cpu().numpy())
 
             test_loss = np.append(test_loss, loss.cpu().item())
             accuracy = np.mean((test_prediction == test_label))
